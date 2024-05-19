@@ -36,10 +36,10 @@ impl Transport for UdpClientTransport {
         Ok(())
     }
 
-    async fn receive(&self) -> Result<Bytes> {
+    async fn receive(&self) -> Result<BytesMut> {
         let mut buf = BytesMut::with_capacity(MTU);
         self.sock.recv_buf(&mut buf).await?;
-        Ok(buf.into())
+        Ok(buf)
     }
 }
 
@@ -75,11 +75,11 @@ impl Transport for UdpServerTransport {
         Ok(())
     }
 
-    async fn receive(&self) -> Result<Bytes> {
+    async fn receive(&self) -> Result<BytesMut> {
         let mut buf = BytesMut::with_capacity(MTU);
         let (_, peer_addr) = self.sock.recv_buf_from(&mut buf).await?;
         let _ = self.last_peer_addr.lock().unwrap().insert(peer_addr);
-        Ok(buf.into())
+        Ok(buf)
     }
 
     fn mark_last_received_valid(&self) {

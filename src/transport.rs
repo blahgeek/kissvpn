@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use anyhow::Result;
 
 #[async_trait]
-pub trait Transport {
+pub trait Transport: Send + Sync {
     // fn init(&mut self) -> Result<()>;
     fn get_mtu(&self) -> usize;
 
@@ -14,7 +14,7 @@ pub trait Transport {
     async fn keep_alive(&self) -> Result<()> { Ok(()) }
 
     async fn send(&self, buf: Bytes) -> Result<()>;
-    async fn receive(&self) -> Result<Bytes>;
+    async fn receive(&self) -> Result<BytesMut>;
 
     // The caller must call this if last received packet is crypto verified,
     // so that the transport knows the peer is trusted.
