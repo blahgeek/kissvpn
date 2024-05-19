@@ -4,6 +4,7 @@ use sha2::Sha256;
 use hkdf::Hkdf;
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, AeadCore, AeadInPlace, Nonce};
 
+#[derive(Clone)]
 pub struct Cipher {
     chacha20: ChaCha20Poly1305,
 }
