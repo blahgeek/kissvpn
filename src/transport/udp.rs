@@ -32,14 +32,25 @@ impl Transport for UdpClientTransport {
     }
 
     async fn send(&self, buf: Bytes) -> Result<()> {
-        self.sock.send(&buf).await?;
-        Ok(())
+        match self.sock.send(&buf).await {
+            // connection_refused is OK (server not started), nothing to do
+            Err(e) if e.kind() != std::io::ErrorKind::ConnectionRefused
+                => return Err(e)?,
+            _ => return Ok(())
+        }
     }
 
     async fn receive(&self) -> Result<BytesMut> {
         let mut buf = BytesMut::with_capacity(MTU);
-        self.sock.recv_buf(&mut buf).await?;
-        Ok(buf)
+        loop {
+            match self.sock.recv_buf(&mut buf).await {
+                Ok(_) => return Ok(buf),
+                // connection_refused is OK (server not started), keep retring
+                Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused
+                    => continue,
+                Err(e) => return Err(e)?,
+            }
+        }
     }
 }
 
