@@ -1,10 +1,18 @@
-use bytes::{BytesMut, Buf, BufMut};
-use rand::RngCore;
+use std::sync::atomic;
+
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use anyhow::Result;
+use rand::RngCore;
+use async_trait::async_trait;
+use tokio::net::ToSocketAddrs;
+
+use super::{udp::{UdpClientTransport, UdpServerTransport}, Transport};
 
 const UDP_MAX_PACKET_SIZE: usize = 1480;
 
 // https://datatracker.ietf.org/doc/html/rfc1035
+const DNS_QTYPE_NULL: u16 = 10;
+const DNS_QCLASS_IN: u16 = 1;
 
 // Query:
 // - header: 12 bytes; each question: QNAME + 4 bytes.
@@ -23,7 +31,8 @@ fn encode_to_query(mut payload: impl Buf, id: u16) -> BytesMut {
 
     // header
     result.put_u16(id);
-    result.put_u16( /* RD */ 1 << 7);
+    result.put_u8( /* RD */ 1);
+    result.put_u8(0);
     result.put_u16(question_count as u16);  // QDCOUNT
     result.put_u16(0);  // ANCOUNT
     result.put_u16(0);  // NSCOUNT
@@ -42,8 +51,8 @@ fn encode_to_query(mut payload: impl Buf, id: u16) -> BytesMut {
         }
         result.put_u8(0);
 
-        result.put_u16(1);  // QTYPE A; TODO
-        result.put_u16(1);  // QCLASS IN; TODO
+        result.put_u16(DNS_QTYPE_NULL);
+        result.put_u16(DNS_QCLASS_IN);
         added_question_count += 1;
     }
     debug_assert!(result.len() <= UDP_MAX_PACKET_SIZE);
@@ -85,12 +94,146 @@ fn decode_from_query(mut buf: impl Buf) -> Result<(BytesMut, u16)> {
     Ok((result, query_id))
 }
 
-fn encode_to_response(payload: impl Buf) -> BytesMut {
-    todo!()
+
+// Response:
+// - header: 12 bytes
+// - single resource record
+//   - name: ".cn."  4 bytes
+//   - type, class (NULL), ttl: 8 bytes
+//   - rdlength: 2 bytes
+//   - rdata:  payload
+// So, max payload = 1454
+const RESPONSE_MAX_PAYLOAD: usize = 1454;
+
+fn encode_to_response(payload: impl Buf, id: u16) -> BytesMut {
+    debug_assert!(payload.remaining() <= RESPONSE_MAX_PAYLOAD);
+
+    let mut result = BytesMut::with_capacity(UDP_MAX_PACKET_SIZE);
+
+    // header
+    result.put_u16(id);
+    result.put_u8( /* response */ 1 << 7);
+    result.put_u8( /* recursive answer */ 1 << 7);
+    result.put_u16(0);  // QDCOUNT
+    result.put_u16(1);  // ANCOUNT
+    result.put_u16(0);  // NSCOUNT
+    result.put_u16(0);  // ARCOUNT
+
+    // resource record
+    result.put_u8(2);
+    result.put_slice(&['c' as u8, 'n' as u8]);
+    result.put_u8(0);  // end of name
+    result.put_u16(DNS_QTYPE_NULL);
+    result.put_u16(DNS_QCLASS_IN);
+    result.put_u32(300);  // TTL
+    result.put_u16(payload.remaining() as u16);  // RDLENGTH
+    result.put(payload);
+
+    debug_assert!(result.len() <= UDP_MAX_PACKET_SIZE);
+    result
 }
 
-fn decode_from_response(buf: impl Buf) -> BytesMut {
-    todo!()
+fn decode_from_response(mut buf: impl Buf) -> Result<BytesMut> {
+    if buf.remaining() < 26 {
+        anyhow::bail!("no enough data for header");
+    }
+    buf.advance(24);
+    let payload_len = buf.get_u16() as usize;
+    if buf.remaining() != payload_len {
+        anyhow::bail!("invalid payload length");
+    }
+
+    let mut result = BytesMut::with_capacity(payload_len);
+    result.put(buf.copy_to_bytes(payload_len));
+    Ok(result)
+}
+
+
+fn transport_mtu() -> usize {
+    usize::min(QUERY_MAX_PAYLOAD, RESPONSE_MAX_PAYLOAD)
+}
+
+
+pub struct FakednsClientTransport {
+    udp_transport: UdpClientTransport,
+}
+
+impl FakednsClientTransport {
+    pub async fn create<TL, TR>(local_addr: TL, remote_addr: TR)
+                                -> Result<FakednsClientTransport>
+    where TL: ToSocketAddrs, TR: ToSocketAddrs {
+        Ok(FakednsClientTransport {
+            udp_transport: UdpClientTransport::create(local_addr, remote_addr).await?
+        })
+    }
+}
+
+#[async_trait]
+impl Transport for FakednsClientTransport {
+    fn get_mtu(&self) -> usize {
+        transport_mtu()
+    }
+
+    async fn send(&self, buf: Bytes) -> Result<()> {
+        let query_id = rand::thread_rng().next_u32() as u16;
+        let encoded = encode_to_query(buf, query_id);
+        self.udp_transport.send(encoded.into()).await?;
+        Ok(())
+    }
+
+    async fn receive(&self) -> Result<BytesMut> {
+        let buf = self.udp_transport.receive().await?;
+        decode_from_response(buf)
+    }
+}
+
+
+pub struct FakednsServerTransport {
+    udp_transport: UdpServerTransport,
+    query_id: atomic::AtomicU16,
+    last_query_id: atomic::AtomicU16,
+}
+
+impl FakednsServerTransport {
+    pub async fn create<T>(local_addr: T) -> Result<FakednsServerTransport>
+    where T: ToSocketAddrs {
+        Ok(FakednsServerTransport {
+            udp_transport: UdpServerTransport::create(local_addr).await?,
+            query_id: atomic::AtomicU16::new(0),
+            last_query_id: atomic::AtomicU16::new(0),
+        })
+    }
+}
+
+#[async_trait]
+impl Transport for FakednsServerTransport {
+    fn get_mtu(&self) -> usize {
+        transport_mtu()
+    }
+
+    async fn send(&self, buf: Bytes) -> Result<()> {
+        let encoded = encode_to_response(buf, self.query_id.load(atomic::Ordering::Acquire));
+        self.udp_transport.send(encoded.freeze()).await?;
+        Ok(())
+    }
+
+    async fn receive(&self) -> Result<BytesMut> {
+        let buf = self.udp_transport.receive().await?;
+        let (decoded, decoded_query_id) = decode_from_query(buf)?;
+        self.last_query_id.store(decoded_query_id, atomic::Ordering::Release);
+        Ok(decoded)
+    }
+
+    fn mark_last_received_valid(&self) {
+        self.query_id.store(
+            self.last_query_id.load(atomic::Ordering::Acquire),
+            atomic::Ordering::Release);
+        self.udp_transport.mark_last_received_valid();
+    }
+
+    fn ready_to_send(&self) -> bool {
+        self.udp_transport.ready_to_send()
+    }
 }
 
 
@@ -113,6 +256,24 @@ mod tests {
             let (decoded_payload, decoded_query_id) = decode_from_query(encoded)?;
 
             assert_eq!(query_id, decoded_query_id);
+            assert_eq!(payload, decoded_payload);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_decode_response() -> Result<()> {
+        let mut rng = rand::thread_rng();
+        for payload_len in 1..=RESPONSE_MAX_PAYLOAD {
+            let mut payload = vec![0u8; payload_len];
+            rng.fill_bytes(&mut payload);
+
+            let query_id = rng.next_u32() as u16;
+            let encoded = encode_to_response(payload.as_slice(), query_id);
+            assert!(encoded.len() <= UDP_MAX_PACKET_SIZE);
+
+            let decoded_payload = decode_from_response(encoded)?;
+
             assert_eq!(payload, decoded_payload);
         }
         Ok(())

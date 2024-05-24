@@ -1,6 +1,6 @@
 use kissvpn::cipher::Cipher;
 use kissvpn::engine;
-use kissvpn::transport::udp::{UdpClientTransport, UdpServerTransport};
+use kissvpn::transport::fakedns::{FakednsClientTransport, FakednsServerTransport};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
             .netmask((255, 255, 255, 0))
             .destination((192, 168, 99, 2));
         let tun_dev = tun::create_as_async(&tun_config)?;
-        let transport = UdpServerTransport::create("0.0.0.0:9000").await?;
+        let transport = FakednsServerTransport::create("0.0.0.0:9000").await?;
         engine::run(tun_dev, transport, cipher).await?;
     } else {
         tun_config
@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
             .netmask((255, 255, 255, 0))
             .destination((192, 168, 99, 1));
         let tun_dev = tun::create_as_async(&tun_config)?;
-        let transport = UdpClientTransport::create("0.0.0.0:0", server_addr + ":9000").await?;
+        let transport = FakednsClientTransport::create("0.0.0.0:0", server_addr + ":9000").await?;
         engine::run(tun_dev, transport, cipher).await?;
     }
 
