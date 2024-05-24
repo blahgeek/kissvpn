@@ -28,3 +28,4 @@ pub trait Transport: Send + Sync {
 
 
 pub mod udp;
+pub mod fakedns;
