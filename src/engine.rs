@@ -5,17 +5,16 @@ use bytes::BytesMut;
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::task;
 
+use crate::constants::UDP_MTU;
 use crate::transport::Transport;
 use crate::cipher::Cipher;
 
-
-const BUF_MAXLEN: usize = 1600;
 
 async fn run_read_tun(mut tun_reader: ReadHalf<tun::AsyncDevice>,
                       transport: &impl Transport,
                       cipher: Cipher) -> Result<()> {
     loop {
-        let mut buf = BytesMut::with_capacity(BUF_MAXLEN);
+        let mut buf = BytesMut::with_capacity(UDP_MTU);
         tun_reader.read_buf(&mut buf).await?;
         cipher.encrypt(&mut buf)?;
         if transport.ready_to_send() {

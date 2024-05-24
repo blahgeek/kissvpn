@@ -17,3 +17,4 @@ chacha20poly1305 = { version = "0.10", features = ["alloc", "std"] }
 sha2 = "0.10.8"
 rand = "0.8.5"
 aead = { version = "0.5.2", features = ["bytes"] }
+static_assertions = "1.1.0"

@@ -4,9 +4,6 @@ use anyhow::Result;
 
 #[async_trait]
 pub trait Transport: Send + Sync {
-    // fn init(&mut self) -> Result<()>;
-    fn get_mtu(&self) -> usize;
-
     // Following methods are all using `&self` instead of `&mut self`, just like tokio::net::UdpSocket
 
     // If keep_alive_interval is not none, the caller should call keep_alive at fixed interval

@@ -1,4 +1,5 @@
 use kissvpn::cipher::Cipher;
+use kissvpn::constants::VPN_MTU;
 use kissvpn::engine;
 use kissvpn::transport::fakedns::{FakednsClientTransport, FakednsServerTransport};
 
@@ -8,7 +9,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut tun_config = tun::Configuration::default();
     tun_config
-        .mtu(1300)
+        .mtu(VPN_MTU as i32)
         .name("tun_kiss")
         .up();
 

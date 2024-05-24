@@ -49,6 +49,8 @@ impl Cipher {
 
 #[cfg(test)]
 mod tests {
+    use crate::constants::{TRANSPORT_MTU, VPN_MTU};
+
     use super::*;
 
     #[test]
@@ -82,6 +84,17 @@ mod tests {
             assert!(cipher.decrypt(&mut buf).is_err());
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_mtu() -> Result<()> {
+        let cipher = Cipher::new("key0");
+        for plaintext_len in 1..=VPN_MTU {
+            let mut buf = BytesMut::zeroed(plaintext_len);
+            cipher.encrypt(&mut buf)?;
+            assert!(buf.len() <= TRANSPORT_MTU);
+        }
         Ok(())
     }
 }

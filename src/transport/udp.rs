@@ -1,5 +1,7 @@
 use std::{net::SocketAddr, sync::Mutex, ops::Deref};
 
+use crate::constants::UDP_MTU;
+
 use super::Transport;
 
 use anyhow::Result;
@@ -27,10 +29,6 @@ impl UdpClientTransport {
 
 #[async_trait]
 impl Transport for UdpClientTransport {
-    fn get_mtu(&self) -> usize {
-        MTU
-    }
-
     async fn send(&self, buf: Bytes) -> Result<()> {
         match self.sock.send(&buf).await {
             // connection_refused is OK (server not started), nothing to do
@@ -41,7 +39,7 @@ impl Transport for UdpClientTransport {
     }
 
     async fn receive(&self) -> Result<BytesMut> {
-        let mut buf = BytesMut::with_capacity(MTU);
+        let mut buf = BytesMut::with_capacity(UDP_MTU);
         loop {
             match self.sock.recv_buf(&mut buf).await {
                 Ok(_) => return Ok(buf),
@@ -75,10 +73,6 @@ impl UdpServerTransport {
 
 #[async_trait]
 impl Transport for UdpServerTransport {
-    fn get_mtu(&self) -> usize {
-        MTU
-    }
-
     async fn send(&self, buf: Bytes) -> Result<()> {
         let peer_addr = self.peer_addr.lock().unwrap().ok_or(
             std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "No valid client yet"))?;
@@ -87,7 +81,7 @@ impl Transport for UdpServerTransport {
     }
 
     async fn receive(&self) -> Result<BytesMut> {
-        let mut buf = BytesMut::with_capacity(MTU);
+        let mut buf = BytesMut::with_capacity(UDP_MTU);
         let (_, peer_addr) = self.sock.recv_buf_from(&mut buf).await?;
         let _ = self.last_peer_addr.lock().unwrap().insert(peer_addr);
         Ok(buf)

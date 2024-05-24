@@ -6,6 +6,7 @@ use rand::RngCore;
 use async_trait::async_trait;
 use tokio::net::ToSocketAddrs;
 
+use crate::constants::TRANSPORT_MTU;
 use super::{udp::{UdpClientTransport, UdpServerTransport}, Transport};
 
 const UDP_MAX_PACKET_SIZE: usize = 1480;
@@ -22,6 +23,7 @@ const DNS_QCLASS_IN: u16 = 1;
 // - So, max payload = 1414 (using 6 questions)
 
 const QUERY_MAX_PAYLOAD: usize = 1414;
+static_assertions::const_assert!(TRANSPORT_MTU <= QUERY_MAX_PAYLOAD);
 
 fn encode_to_query(mut payload: impl Buf, id: u16) -> BytesMut {
     debug_assert!(payload.remaining() <= QUERY_MAX_PAYLOAD);
@@ -104,6 +106,7 @@ fn decode_from_query(mut buf: impl Buf) -> Result<(BytesMut, u16)> {
 //   - rdata:  payload
 // So, max payload = 1454
 const RESPONSE_MAX_PAYLOAD: usize = 1454;
+static_assertions::const_assert!(TRANSPORT_MTU <= RESPONSE_MAX_PAYLOAD);
 
 fn encode_to_response(payload: impl Buf, id: u16) -> BytesMut {
     debug_assert!(payload.remaining() <= RESPONSE_MAX_PAYLOAD);
@@ -149,11 +152,6 @@ fn decode_from_response(mut buf: impl Buf) -> Result<BytesMut> {
 }
 
 
-fn transport_mtu() -> usize {
-    usize::min(QUERY_MAX_PAYLOAD, RESPONSE_MAX_PAYLOAD)
-}
-
-
 pub struct FakednsClientTransport {
     udp_transport: UdpClientTransport,
 }
@@ -170,10 +168,6 @@ impl FakednsClientTransport {
 
 #[async_trait]
 impl Transport for FakednsClientTransport {
-    fn get_mtu(&self) -> usize {
-        transport_mtu()
-    }
-
     async fn send(&self, buf: Bytes) -> Result<()> {
         let query_id = rand::thread_rng().next_u32() as u16;
         let encoded = encode_to_query(buf, query_id);
@@ -207,10 +201,6 @@ impl FakednsServerTransport {
 
 #[async_trait]
 impl Transport for FakednsServerTransport {
-    fn get_mtu(&self) -> usize {
-        transport_mtu()
-    }
-
     async fn send(&self, buf: Bytes) -> Result<()> {
         let encoded = encode_to_response(buf, self.query_id.load(atomic::Ordering::Acquire));
         self.udp_transport.send(encoded.freeze()).await?;
