@@ -4,6 +4,7 @@ use kissvpn::cipher::Cipher;
 use kissvpn::constants::VPN_MTU;
 use kissvpn::engine;
 use kissvpn::transport::fakedns::{FakednsClientTransport, FakednsServerTransport};
+use kissvpn::tun::TunDevice;
 
 
 fn cmd(cmd: &str, args: &[&str]) {
@@ -19,7 +20,7 @@ fn cmd(cmd: &str, args: &[&str]) {
 fn main() -> anyhow::Result<()> {
     let server_addr = std::env::args().nth(1).unwrap();
 
-    let tun_dev = tun_tap::Iface::without_packet_info("tun_kiss", tun_tap::Mode::Tun)?;
+    let tun_dev = TunDevice::create("tun_kiss")?;
     let cipher = Cipher::new("key");
 
     if server_addr == "server" {

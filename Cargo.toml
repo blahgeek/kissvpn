@@ -6,7 +6,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tun-tap = "0.1.4"
 anyhow = "1"
 bytes = "1.6.0"
 log = "0.4.21"
@@ -16,3 +15,4 @@ sha2 = "0.10.8"
 rand = "0.8.5"
 aead = { version = "0.5.2", features = ["bytes"] }
 static_assertions = "1.1.0"
+nix = { version = "0.29.0", features = ["ioctl"] }
