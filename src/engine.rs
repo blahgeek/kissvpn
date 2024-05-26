@@ -14,12 +14,13 @@ fn run_read_tun(mut tun_reader: &TunDevice,
                 transport: &impl Transport,
                 cipher: Cipher) -> Result<()> {
     loop {
-        let mut buf = vec![0u8; UDP_MTU];
+        let mut buf = BytesMut::zeroed(UDP_MTU);
         let buf_len = tun_reader.read(&mut buf)?;
-        let mut buf = BytesMut::from(&buf[0..buf_len]);  // TODO
+        buf.truncate(buf_len);
+
         cipher.encrypt(&mut buf)?;
         if transport.ready_to_send() {
-            transport.send(buf.into())?;
+            transport.send(buf)?;
         }
     }
 }

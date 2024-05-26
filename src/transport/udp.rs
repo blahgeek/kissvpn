@@ -5,7 +5,7 @@ use crate::constants::UDP_MTU;
 use super::Transport;
 
 use anyhow::Result;
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, BytesMut};
 
 pub struct UdpClientTransport {
     sock: UdpSocket,
@@ -24,8 +24,8 @@ impl UdpClientTransport {
 }
 
 impl Transport for UdpClientTransport {
-    fn send(&self, buf: Bytes) -> Result<()> {
-        match self.sock.send(&buf) {
+    fn send(&self, mut buf: impl Buf) -> Result<()> {
+        match self.sock.send(&buf.copy_to_bytes(buf.remaining())) {
             // connection_refused is OK (server not started), nothing to do
             Err(e) if e.kind() != std::io::ErrorKind::ConnectionRefused
                 => return Err(e)?,
@@ -34,11 +34,13 @@ impl Transport for UdpClientTransport {
     }
 
     fn receive(&self) -> Result<BytesMut> {
-        // TODO: remove copy
-        let mut buf = vec![0u8; UDP_MTU];
+        let mut buf = BytesMut::zeroed(UDP_MTU);
         loop {
             match self.sock.recv(&mut buf) {
-                Ok(buf_len) => return Ok(BytesMut::from(&buf[0..buf_len])),
+                Ok(buf_len) => {
+                    buf.truncate(buf_len);
+                    return Ok(buf)
+                },
                 // connection_refused is OK (server not started), keep retring
                 Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused
                     => continue,
@@ -68,18 +70,19 @@ impl UdpServerTransport {
 }
 
 impl Transport for UdpServerTransport {
-    fn send(&self, buf: Bytes) -> Result<()> {
+    fn send(&self, mut buf: impl Buf) -> Result<()> {
         let peer_addr = self.peer_addr.lock().unwrap().ok_or(
             std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "No valid client yet"))?;
-        self.sock.send_to(&buf, peer_addr)?;
+        self.sock.send_to(&buf.copy_to_bytes(buf.remaining()), peer_addr)?;
         Ok(())
     }
 
     fn receive(&self) -> Result<BytesMut> {
-        let mut buf = vec![0u8; UDP_MTU];
+        let mut buf = BytesMut::zeroed(UDP_MTU);
         let (buf_len, peer_addr) = self.sock.recv_from(&mut buf)?;
         let _ = self.last_peer_addr.lock().unwrap().insert(peer_addr);
-        Ok(BytesMut::from(&buf[0..buf_len]))
+        buf.truncate(buf_len);
+        Ok(buf)
     }
 
     fn mark_last_received_valid(&self) {

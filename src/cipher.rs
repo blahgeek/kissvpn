@@ -1,5 +1,5 @@
+use aead::Buffer;
 use anyhow::Result;
-use bytes::BytesMut;
 use sha2::Sha256;
 use hkdf::Hkdf;
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, AeadCore, AeadInPlace, Nonce};
@@ -25,22 +25,22 @@ impl Cipher {
     }
 
     // Encrypt in-place. The buffer capacity must be large enough.
-    pub fn encrypt(&self, buf: &mut BytesMut) -> Result<()> {
+    pub fn encrypt(&self, buf: &mut impl Buffer) -> Result<()> {
         let mut rng = rand::thread_rng();
         let nonce = ChaCha20Poly1305::generate_nonce(&mut rng);
 
         self.chacha20.encrypt_in_place(&nonce, &[], buf)?;
-        buf.extend_from_slice(&nonce);
+        buf.extend_from_slice(&nonce)?;
 
         Ok(())
     }
 
-    pub fn decrypt(&self, buf: &mut BytesMut) -> Result<()> {
+    pub fn decrypt(&self, buf: &mut impl Buffer) -> Result<()> {
         if buf.len() < NONCE_SIZE {
             anyhow::bail!("Invalid length {}", buf.len());
         }
-        let nonce_buf = buf.split_off(buf.len() - NONCE_SIZE);
-        let nonce = Nonce::from_slice(&nonce_buf);
+        let nonce = Nonce::from_slice(&buf.as_ref()[(buf.len() - NONCE_SIZE) ..]).clone();
+        buf.truncate(buf.len() - NONCE_SIZE);
 
         self.chacha20.decrypt_in_place(&nonce, &[], buf)?;
         Ok(())

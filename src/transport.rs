@@ -1,11 +1,11 @@
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, BytesMut};
 use anyhow::Result;
 
 pub trait Transport: Sync {
     // Following methods are all using `&self` instead of `&mut self`,
     // so that they can be used separately in sending and receiving loop
 
-    fn send(&self, buf: Bytes) -> Result<()>;
+    fn send(&self, buf: impl Buf) -> Result<()>;
     fn receive(&self) -> Result<BytesMut>;
 
     // The caller must call this if last received packet is crypto verified,

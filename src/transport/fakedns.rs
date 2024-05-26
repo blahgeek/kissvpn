@@ -1,6 +1,6 @@
 use std::{net::ToSocketAddrs, sync::atomic};
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use anyhow::Result;
 use rand::RngCore;
 
@@ -163,10 +163,10 @@ impl FakednsClientTransport {
 }
 
 impl Transport for FakednsClientTransport {
-    fn send(&self, buf: Bytes) -> Result<()> {
+    fn send(&self, buf: impl Buf) -> Result<()> {
         let query_id = rand::thread_rng().next_u32() as u16;
         let encoded = encode_to_query(buf, query_id);
-        self.udp_transport.send(encoded.into())?;
+        self.udp_transport.send(encoded)?;
         Ok(())
     }
 
@@ -195,9 +195,9 @@ impl FakednsServerTransport {
 }
 
 impl Transport for FakednsServerTransport {
-    fn send(&self, buf: Bytes) -> Result<()> {
+    fn send(&self, buf: impl Buf) -> Result<()> {
         let encoded = encode_to_response(buf, self.query_id.load(atomic::Ordering::Acquire));
-        self.udp_transport.send(encoded.freeze())?;
+        self.udp_transport.send(encoded)?;
         Ok(())
     }
 
