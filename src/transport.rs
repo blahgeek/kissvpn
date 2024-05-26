@@ -1,17 +1,12 @@
-use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use anyhow::Result;
 
-#[async_trait]
-pub trait Transport: Send + Sync {
-    // Following methods are all using `&self` instead of `&mut self`, just like tokio::net::UdpSocket
+pub trait Transport: Sync {
+    // Following methods are all using `&self` instead of `&mut self`,
+    // so that they can be used separately in sending and receiving loop
 
-    // If keep_alive_interval is not none, the caller should call keep_alive at fixed interval
-    fn get_keep_alive_interval(&self) -> Option<std::time::Duration> { None }
-    async fn keep_alive(&self) -> Result<()> { Ok(()) }
-
-    async fn send(&self, buf: Bytes) -> Result<()>;
-    async fn receive(&self) -> Result<BytesMut>;
+    fn send(&self, buf: Bytes) -> Result<()>;
+    fn receive(&self) -> Result<BytesMut>;
 
     // The caller must call this if last received packet is crypto verified,
     // so that the transport knows the peer is trusted.
