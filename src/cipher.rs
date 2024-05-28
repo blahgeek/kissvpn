@@ -50,6 +50,7 @@ impl Cipher {
 #[cfg(test)]
 mod tests {
     use crate::constants::{TRANSPORT_MTU, VPN_MTU};
+    use bytes::BytesMut;
 
     use super::*;
 

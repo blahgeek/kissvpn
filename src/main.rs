@@ -4,6 +4,7 @@ use kissvpn::cipher::Cipher;
 use kissvpn::constants::VPN_MTU;
 use kissvpn::engine;
 use kissvpn::transport::fakedns::{FakednsClientTransport, FakednsServerTransport};
+use kissvpn::transport::udp::UdpClientTransportOptions;
 use kissvpn::tun::TunDevice;
 
 
@@ -31,7 +32,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         cmd("ip", &["addr", "add", "dev", "tun_kiss", "192.168.99.2/24", "peer", "192.168.99.1"]);
         cmd("ip", &["link", "set", "tun_kiss", "mtu", &format!("{}", VPN_MTU), "up"]);
-        let transport = FakednsClientTransport::create("0.0.0.0:0", server_addr + ":9000")?;
+        let transport = FakednsClientTransport::create(server_addr + ":9000", UdpClientTransportOptions::default())?;
         engine::run(tun_dev, transport, cipher)
     }
 }

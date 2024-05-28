@@ -5,7 +5,7 @@ use anyhow::Result;
 use rand::RngCore;
 
 use crate::constants::{TRANSPORT_MTU, UDP_MTU};
-use super::{udp::{UdpClientTransport, UdpServerTransport}, Transport};
+use super::{udp::{UdpClientTransport, UdpClientTransportOptions, UdpServerTransport}, Transport};
 
 // https://datatracker.ietf.org/doc/html/rfc1035
 const DNS_QTYPE_NULL: u16 = 10;
@@ -153,11 +153,11 @@ pub struct FakednsClientTransport {
 }
 
 impl FakednsClientTransport {
-    pub fn create<TL, TR>(local_addr: TL, remote_addr: TR)
-                          -> Result<FakednsClientTransport>
-    where TL: ToSocketAddrs, TR: ToSocketAddrs {
+    pub fn create<TR>(remote_addr: TR, options: UdpClientTransportOptions)
+                      -> Result<FakednsClientTransport>
+    where TR: ToSocketAddrs {
         Ok(FakednsClientTransport {
-            udp_transport: UdpClientTransport::create(local_addr, remote_addr)?
+            udp_transport: UdpClientTransport::create(remote_addr, options)?
         })
     }
 }
