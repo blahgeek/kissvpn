@@ -2,11 +2,11 @@ use aead::Buffer;
 use anyhow::Result;
 use sha2::Sha256;
 use hkdf::Hkdf;
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit, AeadCore, AeadInPlace, Nonce};
+use chacha20poly1305::{ChaCha8Poly1305, KeyInit, AeadCore, AeadInPlace, Nonce};
 
 #[derive(Clone)]
 pub struct Cipher {
-    chacha20: ChaCha20Poly1305,
+    chacha20: ChaCha8Poly1305,
 }
 
 // TODO: how to get these values from chacha20 crate
@@ -20,14 +20,14 @@ impl Cipher {
         hkdf.expand(&[], &mut key).unwrap();
 
         Cipher {
-            chacha20: ChaCha20Poly1305::new_from_slice(&key).unwrap(),
+            chacha20: ChaCha8Poly1305::new_from_slice(&key).unwrap(),
         }
     }
 
     // Encrypt in-place. The buffer capacity must be large enough.
     pub fn encrypt(&self, buf: &mut impl Buffer) -> Result<()> {
         let mut rng = rand::thread_rng();
-        let nonce = ChaCha20Poly1305::generate_nonce(&mut rng);
+        let nonce = ChaCha8Poly1305::generate_nonce(&mut rng);
 
         self.chacha20.encrypt_in_place(&nonce, &[], buf)?;
         buf.extend_from_slice(&nonce)?;
