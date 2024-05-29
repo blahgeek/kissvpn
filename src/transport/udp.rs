@@ -1,7 +1,8 @@
 use core::slice;
+use std::collections::{btree_map, BTreeMap};
 use std::time;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::{collections::VecDeque, ops::Deref, sync::{Arc, Mutex}};
+use std::{ops::Deref, sync::{Arc, Mutex}};
 
 use crate::constants::UDP_MTU;
 
@@ -14,7 +15,7 @@ use nix::sys::epoll::{Epoll, EpollEvent, EpollFlags, EpollTimeout};
 
 pub struct UdpClientTransportOptions {
     /// Max number of sockets at each timepoint
-    pub max_num_sockets: usize,
+    pub max_send_sockets: usize,
     /// Max duration that each socket is used for sending
     pub socket_send_duration: time::Duration,
     /// Max extra duration that each socket is used for receiving after finished sending
@@ -24,7 +25,7 @@ pub struct UdpClientTransportOptions {
 impl Default for UdpClientTransportOptions {
     fn default() -> Self {
         Self {
-            max_num_sockets: 10,
+            max_send_sockets: 10,
             socket_send_duration: time::Duration::from_secs(60),
             socket_lingering_duration: time::Duration::from_secs(60),
         }
@@ -36,15 +37,10 @@ struct SockContext {
     created: time::Instant,
 }
 
-struct SockContexts {
-    ctxs: VecDeque<SockContext>,
-    first_id: u64,   // n-th element in socks has id of socks_first_id + n; useful for epoll
-}
-
 pub struct UdpClientTransport {
     remote_addr: SocketAddr,
     options: UdpClientTransportOptions,
-    sock_ctxs: Mutex<SockContexts>,
+    sock_ctxs: Mutex<BTreeMap<u64, SockContext>>,
     epoll: Epoll,
 }
 
@@ -56,66 +52,79 @@ impl UdpClientTransport {
         Ok(UdpClientTransport {
             remote_addr,
             options,
-            sock_ctxs: Mutex::new(SockContexts {
-                ctxs: VecDeque::default(),
-                first_id: 0,
-            }),
+            sock_ctxs: Mutex::new(BTreeMap::new()),
             epoll: Epoll::new(nix::sys::epoll::EpollCreateFlags::empty())?,
         })
     }
 
-    fn get_or_create_socket(&self) -> Result<Arc<UdpSocket>> {
+    fn get_or_create_socket_for_sending(&self) -> Result<Arc<UdpSocket>> {
         let mut sock_ctxs = self.sock_ctxs.lock().unwrap();
 
         // clear outdated sockets
         let now = time::Instant::now();
         let outdated_time = now - self.options.socket_send_duration - self.options.socket_lingering_duration;
-        while !sock_ctxs.ctxs.is_empty() {
-            let first = sock_ctxs.ctxs.front().unwrap();
-            if first.created >= outdated_time {
+        while !sock_ctxs.is_empty() {
+            let first = sock_ctxs.first_entry().unwrap();
+            if first.get().created >= outdated_time {
                 break;
             }
-            sock_ctxs.ctxs.pop_front();
-            sock_ctxs.first_id += 1;
+            self.epoll.delete(&first.get().sock)?;
+            first.remove_entry();
         }
 
+        // find all sockets avaibale for sending
+        let available_socks: Vec<Arc<UdpSocket>> =
+            sock_ctxs.values()
+            .filter_map(|x| {
+                if x.created >= now - self.options.socket_send_duration {
+                    Some(x.sock.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         // create new socket if required
-        if sock_ctxs.ctxs.len() < self.options.max_num_sockets {
+        if available_socks.len() < self.options.max_send_sockets {
             let sock = UdpSocket::bind("0.0.0.0:0")?;
             // read timeout should not happen because we use epoll, just in case
             sock.set_read_timeout(Some(std::time::Duration::from_millis(1)))?;
             sock.connect(self.remote_addr)?;
 
             let sock = Arc::new(sock);
-            sock_ctxs.ctxs.push_back(SockContext {
+            let sock_id = sock_ctxs.last_entry().map_or(0, |e| e.key() + 1);
+            sock_ctxs.insert(sock_id, SockContext {
                 sock: sock.clone(),
                 created: now,
             });
 
             // add to epoll
-            let sock_id = sock_ctxs.first_id + sock_ctxs.ctxs.len() as u64 - 1;
             self.epoll.add(sock.as_ref(), EpollEvent::new(EpollFlags::EPOLLIN, sock_id))?;
 
             return Ok(sock);
         }
 
-        let rand_id = rand::thread_rng().next_u32() as usize % sock_ctxs.ctxs.len();
-        return Ok(sock_ctxs.ctxs[rand_id].sock.clone());
+        let rand_id = rand::thread_rng().next_u32() as usize % available_socks.len();
+        return Ok(available_socks[rand_id].clone());
     }
 
     fn get_socket_by_id(&self, id: u64) -> Option<Arc<UdpSocket>> {
         let sock_ctxs = self.sock_ctxs.lock().unwrap();
+        sock_ctxs.get(&id).map(|x| x.sock.clone())
+    }
 
-        if id < sock_ctxs.first_id || id >= sock_ctxs.first_id + sock_ctxs.ctxs.len() as u64 {
-            return None
+    fn remove_socket_by_id(&self, id: u64) {
+        let mut sock_ctxs = self.sock_ctxs.lock().unwrap();
+        if let btree_map::Entry::Occupied(e) = sock_ctxs.entry(id) {
+            self.epoll.delete(&e.get().sock).expect("epoll delete error");
+            e.remove_entry();
         }
-        return Some(sock_ctxs.ctxs[(id - sock_ctxs.first_id) as usize].sock.clone());
     }
 }
 
 impl Transport for UdpClientTransport {
     fn send(&self, mut buf: impl Buf) -> Result<()> {
-        let sock = self.get_or_create_socket()?;
+        let sock = self.get_or_create_socket_for_sending()?;
         match sock.send(&buf.copy_to_bytes(buf.remaining())) {
             // connection_refused is OK (server not started), nothing to do
             Err(e) if e.kind() != std::io::ErrorKind::ConnectionRefused
@@ -130,20 +139,22 @@ impl Transport for UdpClientTransport {
             let epoll_event_size =
                 self.epoll.wait(slice::from_mut(&mut epoll_event), EpollTimeout::NONE)?;
             assert_eq!(epoll_event_size, 1);
-            // TODO: handle error
-            assert_eq!(epoll_event.events(), EpollFlags::EPOLLIN);
 
-            let sock = self.get_socket_by_id(epoll_event.data()).unwrap();
+            let sock_id = epoll_event.data();
+            let sock = self.get_socket_by_id(sock_id).unwrap();
             let mut buf = BytesMut::zeroed(UDP_MTU);
             match sock.recv(&mut buf) {
                 Ok(buf_len) => {
                     buf.truncate(buf_len);
                     return Ok(buf)
                 },
-                // connection_refused is OK (server not started), keep retring
-                Err(err) if err.kind() == std::io::ErrorKind::ConnectionRefused
-                    => continue,
-                Err(e) => return Err(e)?,
+                Err(e) => {
+                    // connection_refused is OK (server not started), keep retring
+                    if e.kind() != std::io::ErrorKind::ConnectionRefused {
+                        // TODO: log
+                        self.remove_socket_by_id(sock_id);
+                    }
+                },
             }
         }
     }
