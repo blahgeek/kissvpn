@@ -115,12 +115,18 @@ mod tests {
     }
 
     #[test]
-    fn test_mtu() -> Result<()> {
+    fn test_all_sizes() -> Result<()> {
         let cipher = Cipher::new("key0");
-        for plaintext_len in 1..=VPN_MTU {
-            let mut buf = BytesMut::zeroed(plaintext_len);
+        for plaintext_len in 0..=VPN_MTU {
+            let mut plaintext = BytesMut::zeroed(plaintext_len);
+            rand::thread_rng().fill_bytes(&mut plaintext);
+
+            let mut buf = plaintext.clone();
             cipher.encrypt(&mut buf)?;
             assert!(buf.len() <= TRANSPORT_MTU);
+
+            cipher.decrypt(&mut buf)?;
+            assert_eq!(plaintext, buf);
         }
         Ok(())
     }
