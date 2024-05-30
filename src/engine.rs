@@ -1,4 +1,5 @@
 use std::io::{Read, Write};
+use std::sync::mpsc;
 use std::thread;
 
 use anyhow::Result;
@@ -10,45 +11,64 @@ use crate::cipher::Cipher;
 use crate::tun::TunDevice;
 
 
-fn run_read_tun(mut tun_reader: &TunDevice,
-                transport: &impl Transport,
-                cipher: Cipher) -> Result<()> {
-    loop {
-        let mut buf = BytesMut::zeroed(UDP_MTU);
-        let buf_len = tun_reader.read(&mut buf)?;
-        buf.truncate(buf_len);
-
-        cipher.encrypt(&mut buf)?;
-        if transport.ready_to_send() {
-            transport.send(buf)?;
+fn spawn_loop<'scope, F>(scope: &'scope thread::Scope<'scope, '_>, mut f: F)
+where F: FnMut() -> anyhow::Result<()> + Send + 'scope {
+    scope.spawn(move || {
+        loop {
+            f().unwrap();
         }
-    }
+    });
 }
 
-fn run_write_tun(mut tun_writer: &TunDevice,
-                 transport: &impl Transport,
-                 cipher: Cipher) -> Result<()> {
-    loop {
-        let mut buf = transport.receive()?;
-        if cipher.decrypt(&mut buf).is_ok() {
-            transport.mark_last_received_valid();
-            tun_writer.write(&buf)?;
-        }
-    }
-}
+const CHANNEL_SIZE: usize = 64;
 
-pub fn run(tun_dev: TunDevice,
+pub fn run(tun: TunDevice,
            transport: impl Transport + 'static,
            cipher: Cipher) -> Result<()> {
+    let (tun2transport_sender, tun2transport_receiver) = mpsc::sync_channel::<BytesMut>(CHANNEL_SIZE);
+    let (transport2tun_sender, transport2tun_receiver) = mpsc::sync_channel::<BytesMut>(CHANNEL_SIZE);
+
     thread::scope(|s| {
-        {
-            let cipher = cipher.clone();
-            s.spawn(|| {
-                run_read_tun(&tun_dev, &transport, cipher).unwrap();
-            });
-        }
-        s.spawn(|| {
-            run_write_tun(&tun_dev, &transport, cipher).unwrap();
+        // read from tun
+        let mut tun_ = &tun;
+        spawn_loop(s, move || {
+            let mut buf = BytesMut::zeroed(UDP_MTU);
+            let buf_len = tun_.read(&mut buf)?;
+            buf.truncate(buf_len);
+            tun2transport_sender.send(buf)?;
+            Ok(())
+        });
+
+        // send to transport
+        let transport_ = &transport;
+        let cipher_ = cipher.clone();
+        spawn_loop(s, move || {
+            let mut buf = tun2transport_receiver.recv()?;
+            cipher_.encrypt(&mut buf)?;
+            if transport_.ready_to_send() {
+                transport_.send(buf)?;
+            }
+            Ok(())
+        });
+
+        // receive from transport
+        let transport_ = &transport;
+        let cipher_ = cipher.clone();
+        spawn_loop(s, move || {
+            let mut buf = transport_.receive()?;
+            if cipher_.decrypt(&mut buf).is_ok() {
+                transport_.mark_last_received_valid();
+                transport2tun_sender.send(buf)?;
+            }
+            Ok(())
+        });
+
+        // write to tun
+        let mut tun_ = &tun;
+        spawn_loop(s, move || {
+            let buf = transport2tun_receiver.recv()?;
+            tun_.write(&buf)?;
+            Ok(())
         });
     });
 
