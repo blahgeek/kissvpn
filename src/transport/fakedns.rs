@@ -163,6 +163,8 @@ impl FakednsClientTransport {
 }
 
 impl Transport for FakednsClientTransport {
+    fn needs_keepalive(&self) -> bool { self.udp_transport.needs_keepalive() }
+
     fn send(&self, buf: impl Buf) -> Result<()> {
         let query_id = rand::thread_rng().next_u32() as u16;
         let encoded = encode_to_query(buf, query_id);
@@ -195,6 +197,8 @@ impl FakednsServerTransport {
 }
 
 impl Transport for FakednsServerTransport {
+    fn needs_keepalive(&self) -> bool { self.udp_transport.needs_keepalive() }
+
     fn send(&self, buf: impl Buf) -> Result<()> {
         let encoded = encode_to_response(buf, self.query_id.load(atomic::Ordering::Acquire));
         self.udp_transport.send(encoded)?;

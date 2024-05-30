@@ -8,6 +8,8 @@ pub trait Transport: Sync {
     fn send(&self, buf: impl Buf) -> Result<()>;
     fn receive(&self) -> Result<BytesMut>;
 
+    fn needs_keepalive(&self) -> bool;
+
     // The caller must call this if last received packet is crypto verified,
     // so that the transport knows the peer is trusted.
     // Usually, for a server-side transport, ready_to_send() only returns true after this.

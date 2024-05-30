@@ -123,6 +123,8 @@ impl UdpClientTransport {
 }
 
 impl Transport for UdpClientTransport {
+    fn needs_keepalive(&self) -> bool { true }
+
     fn send(&self, mut buf: impl Buf) -> Result<()> {
         let sock = self.get_or_create_socket_for_sending()?;
         match sock.send(&buf.copy_to_bytes(buf.remaining())) {
@@ -180,6 +182,8 @@ impl UdpServerTransport {
 }
 
 impl Transport for UdpServerTransport {
+    fn needs_keepalive(&self) -> bool { false }
+
     fn send(&self, mut buf: impl Buf) -> Result<()> {
         let peer_addr = self.peer_addr.lock().unwrap().ok_or(
             std::io::Error::new(std::io::ErrorKind::AddrNotAvailable, "No valid client yet"))?;
