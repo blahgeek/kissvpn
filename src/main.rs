@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::process::Command;
 
 use kissvpn::cipher::Cipher;
@@ -12,7 +13,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(short, long)]
+    #[arg(short, long, help="Key string. If key starts with @, then read from the file")]
     key: String,
 
     #[arg(short, long, help="Run this script to configure interface. Arg: IFACE")]
@@ -72,7 +73,15 @@ fn main() -> anyhow::Result<()> {
     }
     run_cmd("ip", &["link", "set", tun_name, "mtu", &format!("{}", VPN_MTU), "up"])?;
 
-    let cipher = Cipher::new(&args.key);
+    let key = if args.key.starts_with("@") {
+        let mut f = std::fs::File::open(&args.key[1..])?;
+        let mut result = String::new();
+        f.read_to_string(&mut result)?;
+        result.trim().into()
+    } else {
+        args.key.clone()
+    };
+    let cipher = Cipher::new(&key);
 
     match args.action {
         Action::Serve { bind } => {
