@@ -132,9 +132,9 @@ impl Transport for UdpClientTransport {
         let (sock_id, sock) = self.get_or_create_socket_for_sending()?;
         match sock.send(&buf.copy_to_bytes(buf.remaining())) {
             Err(e) => {
-                trace!("Udp send error: {}", e);
                 // connection_refused is OK (server not started)
                 if e.kind() != std::io::ErrorKind::ConnectionRefused {
+                    warn!("Udp send error: {}", e);
                     self.remove_socket_by_id(sock_id);
                 }
                 return Err(e)?
@@ -162,9 +162,9 @@ impl Transport for UdpClientTransport {
                 return Ok(buf)
             },
             Err(e) => {
-                warn!("Udp receive error: {e}");
                 // connection_refused is OK (server not started), keep retring
                 if e.kind() != std::io::ErrorKind::ConnectionRefused {
+                    warn!("Udp receive error: {e}");
                     self.remove_socket_by_id(sock_id);
                 }
                 return Err(e)?
