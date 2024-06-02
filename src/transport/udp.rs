@@ -9,7 +9,7 @@ use crate::constants::UDP_MTU;
 use super::Transport;
 
 use anyhow::Result;
-use log::warn;
+use log::{info, trace, warn};
 use bytes::{Buf, BytesMut};
 use rand::RngCore;
 use nix::sys::epoll::{Epoll, EpollEvent, EpollFlags, EpollTimeout};
@@ -50,6 +50,7 @@ impl UdpClientTransport {
     where TR: ToSocketAddrs {
         let remote_addr = remote_addr.to_socket_addrs()?
             .next().ok_or(anyhow::format_err!("lookup_host failed"))?;
+        info!("Creating udp client transport to {remote_addr}");
         Ok(UdpClientTransport {
             remote_addr,
             options,
@@ -87,6 +88,7 @@ impl UdpClientTransport {
 
         // create new socket if required
         if available_socks.len() < self.options.max_send_sockets {
+            trace!("Creating new udp socket");
             let sock = UdpSocket::bind("0.0.0.0:0")?;
             // read timeout should not happen because we use epoll, just in case
             sock.set_read_timeout(Some(std::time::Duration::from_millis(1)))?;
@@ -143,6 +145,10 @@ impl Transport for UdpClientTransport {
                 self.epoll.wait(slice::from_mut(&mut epoll_event), EpollTimeout::NONE)?;
             assert_eq!(epoll_event_size, 1);
 
+            if epoll_event.events() != EpollFlags::EPOLLIN {
+                trace!("epoll result contains error: {:?}", epoll_event.events());
+            }
+
             let sock_id = epoll_event.data();
             let sock = self.get_socket_by_id(sock_id).unwrap();
             let mut buf = BytesMut::zeroed(UDP_MTU);
@@ -173,6 +179,9 @@ pub struct UdpServerTransport {
 impl UdpServerTransport {
     pub fn create<T>(local_addr: T) -> Result<UdpServerTransport>
     where T: ToSocketAddrs {
+        let local_addr = local_addr.to_socket_addrs()?
+            .next().ok_or(anyhow::format_err!("lookup_host failed"))?;
+        info!("Creating udp server transport on {local_addr}");
         let sock = UdpSocket::bind(local_addr)?;
         Ok(UdpServerTransport {
             sock,

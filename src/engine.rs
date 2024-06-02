@@ -4,6 +4,7 @@ use std::{thread, time};
 
 use anyhow::Result;
 use bytes::BytesMut;
+use log::trace;
 
 use crate::constants::UDP_MTU;
 use crate::transport::Transport;
@@ -69,6 +70,8 @@ pub fn run(tun: TunDevice,
                 if !buf.is_empty() {  // empty is for keepalive
                     transport2tun_sender.send(buf)?;
                 }
+            } else {
+                trace!("Received invalid packet (unable to decrypt)");
             }
             Ok(())
         });
@@ -86,6 +89,7 @@ pub fn run(tun: TunDevice,
                 let mut last_tun_read_v = *last_tun_read.lock().unwrap();
                 let now = time::Instant::now();
                 if now > last_tun_read_v + KEEPALIVE_INTERVAL {
+                    trace!("Sending keepalive packet");
                     tun2transport_sender.send(BytesMut::new())?;
                     last_tun_read_v = now;
                     *last_tun_read.lock().unwrap() = now;
