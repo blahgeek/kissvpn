@@ -68,10 +68,10 @@ fn main() -> anyhow::Result<()> {
     let tun_name = tun_dev.name();
     info!("Tun device created: {tun_name}");
 
+    run_cmd("ip", &["link", "set", tun_name, "mtu", &format!("{}", VPN_MTU), "up"])?;
     if let Some(up_script) = &args.up_script {
         run_cmd(&up_script, &[tun_name])?;
     }
-    run_cmd("ip", &["link", "set", tun_name, "mtu", &format!("{}", VPN_MTU), "up"])?;
 
     let key = if args.key.starts_with("@") {
         let mut f = std::fs::File::open(&args.key[1..])?;
