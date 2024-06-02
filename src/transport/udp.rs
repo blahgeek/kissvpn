@@ -4,7 +4,7 @@ use std::time;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::{ops::Deref, sync::{Arc, Mutex}};
 
-use crate::constants::UDP_MTU;
+use crate::constants::BUF_CAPACITY;
 
 use super::Transport;
 
@@ -155,7 +155,7 @@ impl Transport for UdpClientTransport {
 
         let sock_id = epoll_event.data();
         let sock = self.get_socket_by_id(sock_id).unwrap();
-        let mut buf = BytesMut::zeroed(UDP_MTU);
+        let mut buf = BytesMut::zeroed(BUF_CAPACITY);
         match sock.recv(&mut buf) {
             Ok(buf_len) => {
                 buf.truncate(buf_len);
@@ -206,7 +206,7 @@ impl Transport for UdpServerTransport {
     }
 
     fn receive(&self) -> Result<BytesMut> {
-        let mut buf = BytesMut::zeroed(UDP_MTU);
+        let mut buf = BytesMut::zeroed(BUF_CAPACITY);
         let (buf_len, peer_addr) = self.sock.recv_from(&mut buf)?;
         let _ = self.last_peer_addr.lock().unwrap().insert(peer_addr);
         buf.truncate(buf_len);

@@ -6,7 +6,7 @@ use anyhow::Result;
 use bytes::BytesMut;
 use log::trace;
 
-use crate::constants::UDP_MTU;
+use crate::constants::BUF_CAPACITY;
 use crate::transport::Transport;
 use crate::cipher::Cipher;
 use crate::tun::TunDevice;
@@ -40,7 +40,7 @@ pub fn run(tun: TunDevice,
         let last_tun_read_ = last_tun_read.clone();
         let tun2transport_sender_ = tun2transport_sender.clone();
         spawn_loop(s, move || {
-            let mut buf = BytesMut::zeroed(UDP_MTU);
+            let mut buf = BytesMut::zeroed(BUF_CAPACITY);
             let buf_len = tun_.read(&mut buf)?;
             buf.truncate(buf_len);
             *last_tun_read_.lock().unwrap() = time::Instant::now();

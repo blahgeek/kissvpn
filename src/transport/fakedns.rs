@@ -4,7 +4,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use anyhow::Result;
 use rand::RngCore;
 
-use crate::constants::{TRANSPORT_MTU, UDP_MTU};
+use crate::constants::{BUF_CAPACITY, TRANSPORT_MTU, UDP_MTU};
 use super::{udp::{UdpClientTransport, UdpClientTransportOptions, UdpServerTransport}, Transport};
 
 // https://datatracker.ietf.org/doc/html/rfc1035
@@ -16,15 +16,17 @@ const DNS_QCLASS_IN: u16 = 1;
 // - Use QNAME in question section for all data
 // - Each QNAME can store at most 63+63+63+61=250 bytes (+5 label length bytes, total 255)
 // - "(Although) labels can contain any 8 bit values in octets that make up a label ... "
-// - So, max payload = 1414 (using 6 questions)
 
-const QUERY_MAX_PAYLOAD: usize = 1414;
-static_assertions::const_assert!(TRANSPORT_MTU <= QUERY_MAX_PAYLOAD);
+// Make sure that after encoding to query, it fits in UDP_MTU
+static_assertions::const_assert!(
+    TRANSPORT_MTU + (TRANSPORT_MTU + 250 - 1) / 250 * (4 + 5) + 12
+        < UDP_MTU
+);
 
 fn encode_to_query(mut payload: impl Buf, id: u16) -> BytesMut {
-    debug_assert!(payload.remaining() <= QUERY_MAX_PAYLOAD);
+    debug_assert!(payload.remaining() <= TRANSPORT_MTU);
 
-    let mut result = BytesMut::with_capacity(UDP_MTU);
+    let mut result = BytesMut::with_capacity(BUF_CAPACITY);
     let question_count = (payload.remaining() + 250 - 1) / 250;
 
     // header
@@ -100,14 +102,14 @@ fn decode_from_query(mut buf: impl Buf) -> Result<(BytesMut, u16)> {
 //   - type, class (NULL), ttl: 8 bytes
 //   - rdlength: 2 bytes
 //   - rdata:  payload
-// So, max payload = 1454
-const RESPONSE_MAX_PAYLOAD: usize = 1454;
-static_assertions::const_assert!(TRANSPORT_MTU <= RESPONSE_MAX_PAYLOAD);
+
+// Make sure that after encoding to response, it fits in UDP_MTU
+static_assertions::const_assert!(TRANSPORT_MTU + 12 + 4 + 8 + 2 < UDP_MTU);
 
 fn encode_to_response(payload: impl Buf, id: u16) -> BytesMut {
-    debug_assert!(payload.remaining() <= RESPONSE_MAX_PAYLOAD);
+    debug_assert!(payload.remaining() <= TRANSPORT_MTU);
 
-    let mut result = BytesMut::with_capacity(UDP_MTU);
+    let mut result = BytesMut::with_capacity(BUF_CAPACITY);
 
     // header
     result.put_u16(id);
@@ -233,7 +235,7 @@ mod tests {
     #[test]
     fn test_encode_decode_query() -> Result<()> {
         let mut rng = rand::thread_rng();
-        for payload_len in 1..=QUERY_MAX_PAYLOAD {
+        for payload_len in 1..=TRANSPORT_MTU {
             let mut payload = vec![0u8; payload_len];
             rng.fill_bytes(&mut payload);
 
@@ -252,7 +254,7 @@ mod tests {
     #[test]
     fn test_encode_decode_response() -> Result<()> {
         let mut rng = rand::thread_rng();
-        for payload_len in 1..=RESPONSE_MAX_PAYLOAD {
+        for payload_len in 1..=TRANSPORT_MTU {
             let mut payload = vec![0u8; payload_len];
             rng.fill_bytes(&mut payload);
 
