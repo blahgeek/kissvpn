@@ -9,6 +9,7 @@ use crate::constants::UDP_MTU;
 use super::Transport;
 
 use anyhow::Result;
+use log::warn;
 use bytes::{Buf, BytesMut};
 use rand::RngCore;
 use nix::sys::epoll::{Epoll, EpollEvent, EpollFlags, EpollTimeout};
@@ -153,7 +154,7 @@ impl Transport for UdpClientTransport {
                 Err(e) => {
                     // connection_refused is OK (server not started), keep retring
                     if e.kind() != std::io::ErrorKind::ConnectionRefused {
-                        // TODO: log
+                        warn!("Udp receive error: {e}");
                         self.remove_socket_by_id(sock_id);
                     }
                 },
