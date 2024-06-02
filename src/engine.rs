@@ -43,8 +43,8 @@ pub fn run(tun: TunDevice,
             let mut buf = BytesMut::zeroed(UDP_MTU);
             let buf_len = tun_.read(&mut buf)?;
             buf.truncate(buf_len);
-            tun2transport_sender_.send(buf)?;
             *last_tun_read_.lock().unwrap() = time::Instant::now();
+            tun2transport_sender_.send(buf)?;
             Ok(())
         });
 
@@ -55,7 +55,9 @@ pub fn run(tun: TunDevice,
             let mut buf = tun2transport_receiver.recv()?;
             cipher_.encrypt(&mut buf)?;
             if transport_.ready_to_send() {
-                transport_.send(buf)?;
+                if let Err(e) = transport_.send(buf) {
+                    trace!("Transport send error: {}", e);
+                }
             }
             Ok(())
         });
@@ -64,7 +66,13 @@ pub fn run(tun: TunDevice,
         let transport_ = &transport;
         let cipher_ = cipher.clone();
         spawn_loop(s, move || {
-            let mut buf = transport_.receive()?;
+            let mut buf = match transport_.receive() {
+                Ok(buf) => buf,
+                Err(e) => {
+                    trace!("Transport receive error: {}", e);
+                    return Ok(());
+                },
+            };
             if cipher_.decrypt(&mut buf).is_ok() {
                 transport_.mark_last_received_valid();
                 if !buf.is_empty() {  // empty is for keepalive

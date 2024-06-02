@@ -59,7 +59,7 @@ impl UdpClientTransport {
         })
     }
 
-    fn get_or_create_socket_for_sending(&self) -> Result<Arc<UdpSocket>> {
+    fn get_or_create_socket_for_sending(&self) -> Result<(u64, Arc<UdpSocket>)> {
         let mut sock_ctxs = self.sock_ctxs.lock().unwrap();
 
         // clear outdated sockets
@@ -75,11 +75,11 @@ impl UdpClientTransport {
         }
 
         // find all sockets avaibale for sending
-        let available_socks: Vec<Arc<UdpSocket>> =
-            sock_ctxs.values()
-            .filter_map(|x| {
+        let available_socks: Vec<(u64, Arc<UdpSocket>)> =
+            sock_ctxs.iter()
+            .filter_map(|(id, x)| {
                 if x.created >= now - self.options.socket_send_duration {
-                    Some(x.sock.clone())
+                    Some((id.clone(), x.sock.clone()))
                 } else {
                     None
                 }
@@ -104,7 +104,7 @@ impl UdpClientTransport {
             // add to epoll
             self.epoll.add(sock.as_ref(), EpollEvent::new(EpollFlags::EPOLLIN, sock_id))?;
 
-            return Ok(sock);
+            return Ok((sock_id, sock));
         }
 
         let rand_id = rand::thread_rng().next_u32() as usize % available_socks.len();
@@ -129,42 +129,46 @@ impl Transport for UdpClientTransport {
     fn needs_keepalive(&self) -> bool { true }
 
     fn send(&self, mut buf: impl Buf) -> Result<()> {
-        let sock = self.get_or_create_socket_for_sending()?;
+        let (sock_id, sock) = self.get_or_create_socket_for_sending()?;
         match sock.send(&buf.copy_to_bytes(buf.remaining())) {
-            // connection_refused is OK (server not started), nothing to do
-            Err(e) if e.kind() != std::io::ErrorKind::ConnectionRefused
-                => return Err(e)?,
+            Err(e) => {
+                trace!("Udp send error: {}", e);
+                // connection_refused is OK (server not started)
+                if e.kind() != std::io::ErrorKind::ConnectionRefused {
+                    self.remove_socket_by_id(sock_id);
+                }
+                return Err(e)?
+            },
             _ => return Ok(())
         }
     }
 
     fn receive(&self) -> Result<BytesMut> {
-        loop {
-            let mut epoll_event = EpollEvent::empty();
-            let epoll_event_size =
-                self.epoll.wait(slice::from_mut(&mut epoll_event), EpollTimeout::NONE)?;
-            assert_eq!(epoll_event_size, 1);
+        let mut epoll_event = EpollEvent::empty();
+        let epoll_event_size =
+            self.epoll.wait(slice::from_mut(&mut epoll_event), EpollTimeout::NONE)?;
+        assert_eq!(epoll_event_size, 1);
 
-            if epoll_event.events() != EpollFlags::EPOLLIN {
-                trace!("epoll result contains error: {:?}", epoll_event.events());
-            }
+        if epoll_event.events() != EpollFlags::EPOLLIN {
+            trace!("epoll result contains error: {:?}", epoll_event.events());
+        }
 
-            let sock_id = epoll_event.data();
-            let sock = self.get_socket_by_id(sock_id).unwrap();
-            let mut buf = BytesMut::zeroed(UDP_MTU);
-            match sock.recv(&mut buf) {
-                Ok(buf_len) => {
-                    buf.truncate(buf_len);
-                    return Ok(buf)
-                },
-                Err(e) => {
-                    // connection_refused is OK (server not started), keep retring
-                    if e.kind() != std::io::ErrorKind::ConnectionRefused {
-                        warn!("Udp receive error: {e}");
-                        self.remove_socket_by_id(sock_id);
-                    }
-                },
-            }
+        let sock_id = epoll_event.data();
+        let sock = self.get_socket_by_id(sock_id).unwrap();
+        let mut buf = BytesMut::zeroed(UDP_MTU);
+        match sock.recv(&mut buf) {
+            Ok(buf_len) => {
+                buf.truncate(buf_len);
+                return Ok(buf)
+            },
+            Err(e) => {
+                warn!("Udp receive error: {e}");
+                // connection_refused is OK (server not started), keep retring
+                if e.kind() != std::io::ErrorKind::ConnectionRefused {
+                    self.remove_socket_by_id(sock_id);
+                }
+                return Err(e)?
+            },
         }
     }
 }
