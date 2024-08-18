@@ -101,17 +101,20 @@ mod tests {
     #[test]
     fn test_timers() {
         let result = Arc::new(Mutex::new(String::new()));
-        let make_task =
-            |result: Arc<Mutex<String>>, s: String| {
+        let make_task = {
+            let result = result.clone();
+            move |s: String| {
+                let result = result.clone();
                 move || {
                     result.lock().unwrap().push_str(&s)
                 }
-            };
+            }
+        };
 
         let runner = TimerRunner::new();
-        let joba = runner.schedule(Duration::from_millis(100), make_task(result.clone(), "a".into()));
-        runner.schedule(Duration::from_millis(200), make_task(result.clone(), "b".into()));
-        runner.schedule(Duration::from_millis(100), make_task(result.clone(), "c".into()));
+        let joba = runner.schedule(Duration::from_millis(100), make_task("a".into()));
+        runner.schedule(Duration::from_millis(200), make_task("b".into()));
+        runner.schedule(Duration::from_millis(100), make_task("c".into()));
 
         assert!(runner.cancel(&joba));
 
