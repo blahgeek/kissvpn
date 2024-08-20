@@ -206,16 +206,13 @@ mod tests {
     use std::str::FromStr;
     use anyhow::Result;
     use bytes::Bytes;
+    use std::sync::mpsc;
 
     use super::*;
 
-    struct MockRawSocketSender {
-        sent_packets: Vec<Bytes>,
-    }
-
-    impl RawSocketSender for &mut MockRawSocketSender {
+    impl RawSocketSender for mpsc::Sender<Bytes> {
         fn send(&mut self, pkt: &[u8]) -> std::io::Result<()> {
-            self.sent_packets.push(Bytes::copy_from_slice(pkt));
+            (self as &mpsc::Sender<Bytes>).send(Bytes::copy_from_slice(pkt)).unwrap();
             Ok(())
         }
     }
@@ -225,15 +222,12 @@ mod tests {
         let local_addr = SocketAddrV4::from_str("127.0.0.1:1234")?;
         let remote_addr = SocketAddrV4::from_str("127.0.0.1:1235")?;
 
-        let mut raw_sock = MockRawSocketSender{
-            sent_packets: Vec::new(),
-        };
+        let (raw_sock_sender, raw_sock_receiver) = mpsc::channel::<Bytes>();
 
-        let sock = Socket::new_connect(local_addr, remote_addr, &mut raw_sock)?;
+        let sock = Socket::new_connect(local_addr, remote_addr, raw_sock_sender)?;
         assert!(!sock.ready());
 
-        assert_eq!(raw_sock.sent_packets.len(), 1);
-        let pkt = &raw_sock.sent_packets[0];
+        let pkt = raw_sock_receiver.recv_timeout(std::time::Duration::ZERO).unwrap();
         assert_eq!(pkt.len(), 24);
         assert_eq!(pkt.slice(0..4), b"\x04\xd2\x04\xd3" as &[u8]); // port
         assert_eq!(pkt.slice(12..16), b"\x60\x02\xff\xff" as &[u8]);
@@ -252,4 +246,5 @@ mod tests {
 
         Ok(())
     }
+
 }
