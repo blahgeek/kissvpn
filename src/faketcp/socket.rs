@@ -1,6 +1,6 @@
 use std::net::SocketAddrV4;
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use rand::Rng;
 
 use crate::constants::BUF_CAPACITY;
@@ -13,11 +13,8 @@ use crate::constants::BUF_CAPACITY;
 // 3. no disconnection, only RST, by client
 // 4. also, no disconnect callback. server should simply drop old connections after certain time when new is created
 
-pub trait SocketDelegate {
-    fn handle_socket_ready(&mut self) {}
-    fn handle_socket_data_received(&mut self, _: &[u8]) {}
-
-    fn send_raw_socket(&mut self, pkt: &[u8]) -> std::io::Result<()>;
+pub trait RawSocketSender {
+    fn send(&mut self, pkt: &[u8]) -> std::io::Result<()>;
 }
 
 const TCP_FLAG_SYN: u8 = 0x02;
@@ -32,7 +29,7 @@ enum SocketState {
     Established,
 }
 
-pub struct Socket<D> {
+pub struct Socket<RAW> {
     local_addr: SocketAddrV4,
     remote_addr: SocketAddrV4,
 
@@ -41,7 +38,7 @@ pub struct Socket<D> {
     next_send_seq: u32,
     next_recv_seq: u32,  // expected next received seq
 
-    delegate: D,
+    raw_sock: RAW,
 }
 
 fn ones_complement_add_by_16bit(data: &[u8], init: u16) -> u16 {
@@ -59,29 +56,29 @@ fn ones_complement_add_by_16bit(data: &[u8], init: u16) -> u16 {
     return sum as u16;
 }
 
-impl<D> Socket<D> where D: SocketDelegate {
-    pub fn new_connect(local_addr: SocketAddrV4, remote_addr: SocketAddrV4, delegate: D) -> std::io::Result<Self> {
+impl<RAW> Socket<RAW> where RAW: RawSocketSender {
+    pub fn new_connect(local_addr: SocketAddrV4, remote_addr: SocketAddrV4, raw_sock: RAW) -> std::io::Result<Self> {
         let mut sock = Self {
             local_addr,
             remote_addr,
             state: SocketState::SynSent,
             next_send_seq: 0,
             next_recv_seq: 0,
-            delegate
+            raw_sock
         };
         sock._send_syn(/* with_ack */ false)?;
         Ok(sock)
     }
 
     /// Create a server-side socket. The state after creation is initial, the first SYN packet should be fed after creation.
-    pub fn new_listened(local_addr: SocketAddrV4, remote_addr: SocketAddrV4, delegate: D) -> std::io::Result<Self> {
+    pub fn new_listened(local_addr: SocketAddrV4, remote_addr: SocketAddrV4, raw_sock: RAW) -> std::io::Result<Self> {
         Ok(Self {
             local_addr,
             remote_addr,
             state: SocketState::Initial,
             next_send_seq: 0,
             next_recv_seq: 0,
-            delegate
+            raw_sock
         })
     }
 
@@ -97,7 +94,10 @@ impl<D> Socket<D> where D: SocketDelegate {
         Ok(())
     }
 
-    pub fn feed_packet(&mut self, mut pkt: &[u8]) -> std::io::Result<()> {
+    /// feed received packet (that belong to this socket (port)).
+    /// maybe return data if any;
+    /// or the socket's state may change (to ready).
+    pub fn feed_packet<'a>(&mut self, mut pkt: &'a [u8]) -> std::io::Result<&'a [u8]> {
         if pkt.len() < 20 {
             return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
         }
@@ -124,7 +124,6 @@ impl<D> Socket<D> where D: SocketDelegate {
                     self.state = SocketState::Established;
                     self.next_recv_seq = seq_n + 1;
                     self._send_tcp_packet(TCP_FLAG_ACK, &[], &[])?;
-                    self.delegate.handle_socket_ready();
                 }
             },
             SocketState::Initial => {
@@ -137,17 +136,16 @@ impl<D> Socket<D> where D: SocketDelegate {
             SocketState::SynReceived => {
                 if flags == TCP_FLAG_ACK && ack_n == self.next_send_seq {
                     self.state = SocketState::Established;
-                    self.delegate.handle_socket_ready();
                 }
             },
             SocketState::Established => {
                 if flags == TCP_FLAG_ACK {
                     self.next_recv_seq = self.next_recv_seq.max(seq_n + pkt.remaining() as u32);
-                    self.delegate.handle_socket_data_received(pkt);
+                    return Ok(pkt)
                 }
             },
         }
-        return Ok(())
+        return Ok(&[])
     }
 
     pub fn ready(&self) -> bool {
@@ -183,7 +181,7 @@ impl<D> Socket<D> where D: SocketDelegate {
         packet.put(options);
         packet.put(data);
 
-        self.delegate.send_raw_socket(&packet)
+        self.raw_sock.send(&packet)
     }
 
     fn _send_syn(&mut self, with_ack: bool) -> std::io::Result<()> {
@@ -211,12 +209,12 @@ mod tests {
 
     use super::*;
 
-    struct TestDelegate {
+    struct MockRawSocketSender {
         sent_packets: Vec<Bytes>,
     }
 
-    impl SocketDelegate for &mut TestDelegate {
-        fn send_raw_socket(&mut self, pkt: &[u8]) -> std::io::Result<()> {
+    impl RawSocketSender for &mut MockRawSocketSender {
+        fn send(&mut self, pkt: &[u8]) -> std::io::Result<()> {
             self.sent_packets.push(Bytes::copy_from_slice(pkt));
             Ok(())
         }
@@ -227,15 +225,15 @@ mod tests {
         let local_addr = SocketAddrV4::from_str("127.0.0.1:1234")?;
         let remote_addr = SocketAddrV4::from_str("127.0.0.1:1235")?;
 
-        let mut delegate = TestDelegate{
+        let mut raw_sock = MockRawSocketSender{
             sent_packets: Vec::new(),
         };
 
-        let sock = Socket::new_connect(local_addr, remote_addr, &mut delegate)?;
+        let sock = Socket::new_connect(local_addr, remote_addr, &mut raw_sock)?;
         assert!(!sock.ready());
 
-        assert_eq!(delegate.sent_packets.len(), 1);
-        let pkt = &delegate.sent_packets[0];
+        assert_eq!(raw_sock.sent_packets.len(), 1);
+        let pkt = &raw_sock.sent_packets[0];
         assert_eq!(pkt.len(), 24);
         assert_eq!(pkt.slice(0..4), b"\x04\xd2\x04\xd3" as &[u8]); // port
         assert_eq!(pkt.slice(12..16), b"\x60\x02\xff\xff" as &[u8]);
