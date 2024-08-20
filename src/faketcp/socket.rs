@@ -1,34 +1,42 @@
 use std::net::SocketAddrV4;
 
-use bytes::{BufMut, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use rand::Rng;
 
 use crate::constants::BUF_CAPACITY;
 
 // Very simple fake tcp:
 // 1. No active ACK
-// 2. Which means only two-way handshake
-// 3. Sequence id will not overflow
+// 2. Sequence id will not overflow
 //   a. start with lower half
 //   b. limit usage per socket (controlled by upper layer)
+// 3. no disconnection, only RST, by client
+// 4. also, no disconnect callback. server should simply drop old connections after certain time when new is created
 
 pub trait SocketDelegate {
     fn handle_socket_ready(&mut self) {}
-    fn handle_socket_data_received(&mut self) {}
-    fn handle_socket_error(&mut self) {}
+    fn handle_socket_data_received(&mut self, _: &[u8]) {}
 
-    fn send_raw_socket_data(&mut self, data: &[u8]) -> std::io::Result<()>;
+    fn send_raw_socket(&mut self, pkt: &[u8]) -> std::io::Result<()>;
 }
 
 const TCP_FLAG_SYN: u8 = 0x02;
 const TCP_FLAG_ACK: u8 = 0x10;
 const TCP_FLAG_RST: u8 = 0x04;
 
+#[derive(PartialEq, Eq)]
+enum SocketState {
+    Initial,  // server only
+    SynSent,  // client only
+    SynReceived,  // server only
+    Established,
+}
+
 pub struct Socket<D> {
     local_addr: SocketAddrV4,
     remote_addr: SocketAddrV4,
 
-    is_waiting_syn: bool,  // only for client socket
+    state: SocketState,
 
     next_send_seq: u32,
     next_recv_seq: u32,  // expected next received seq
@@ -52,24 +60,101 @@ fn ones_complement_add_by_16bit(data: &[u8], init: u16) -> u16 {
 }
 
 impl<D> Socket<D> where D: SocketDelegate {
-    pub fn connect(local_addr: SocketAddrV4, remote_addr: SocketAddrV4, delegate: D) -> std::io::Result<Self> {
+    pub fn new_connect(local_addr: SocketAddrV4, remote_addr: SocketAddrV4, delegate: D) -> std::io::Result<Self> {
         let mut sock = Self {
             local_addr,
             remote_addr,
-            is_waiting_syn: true,
+            state: SocketState::SynSent,
             next_send_seq: 0,
             next_recv_seq: 0,
             delegate
         };
-        sock.send_syn(/* with_ack */ false)?;
+        sock._send_syn(/* with_ack */ false)?;
         Ok(sock)
     }
 
-    pub fn ready(&self) -> bool {
-        !self.is_waiting_syn
+    /// Create a server-side socket. The state after creation is initial, the first SYN packet should be fed after creation.
+    pub fn new_listened(local_addr: SocketAddrV4, remote_addr: SocketAddrV4, delegate: D) -> std::io::Result<Self> {
+        Ok(Self {
+            local_addr,
+            remote_addr,
+            state: SocketState::Initial,
+            next_send_seq: 0,
+            next_recv_seq: 0,
+            delegate
+        })
     }
 
-    fn send_tcp_packet(&mut self, flags: u8, options: &[u8], data: &[u8]) -> std::io::Result<()> {
+    pub fn send(&mut self, data: &[u8]) -> std::io::Result<()> {
+        assert!(self.ready());
+        self._send_tcp_packet(TCP_FLAG_ACK, &[], data)?;
+        self.next_send_seq += data.len() as u32;
+        Ok(())
+    }
+
+    pub fn send_rst(&mut self) -> std::io::Result<()> {
+        self._send_tcp_packet(TCP_FLAG_RST, &[], &[])?;
+        Ok(())
+    }
+
+    pub fn feed_packet(&mut self, mut pkt: &[u8]) -> std::io::Result<()> {
+        if pkt.len() < 20 {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+        if pkt.get_u16() != self.remote_addr.port() || pkt.get_u16() != self.local_addr.port() {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+        let seq_n = pkt.get_u32();
+        let ack_n = pkt.get_u32();
+        let data_offset = ((pkt.get_u8() >> 4) * 4) as usize;
+        if data_offset < 20 {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+        let flags = pkt.get_u8();
+        // skip window size, checksum, urgent pointer, and options
+        let skip_size = 6 + data_offset - 20;
+        if pkt.len() < skip_size {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+        pkt.advance(skip_size);
+
+        match self.state {
+            SocketState::SynSent => {
+                if flags == (TCP_FLAG_ACK | TCP_FLAG_SYN) && ack_n == self.next_send_seq {
+                    self.state = SocketState::Established;
+                    self.next_recv_seq = seq_n + 1;
+                    self._send_tcp_packet(TCP_FLAG_ACK, &[], &[])?;
+                    self.delegate.handle_socket_ready();
+                }
+            },
+            SocketState::Initial => {
+                if flags == TCP_FLAG_SYN {
+                    self.state = SocketState::SynReceived;
+                    self.next_recv_seq = seq_n + 1;
+                    self._send_syn(/* with ack */ true)?;
+                }
+            },
+            SocketState::SynReceived => {
+                if flags == TCP_FLAG_ACK && ack_n == self.next_send_seq {
+                    self.state = SocketState::Established;
+                    self.delegate.handle_socket_ready();
+                }
+            },
+            SocketState::Established => {
+                if flags == TCP_FLAG_ACK {
+                    self.next_recv_seq = self.next_recv_seq.max(seq_n + pkt.remaining() as u32);
+                    self.delegate.handle_socket_data_received(pkt);
+                }
+            },
+        }
+        return Ok(())
+    }
+
+    pub fn ready(&self) -> bool {
+        self.state == SocketState::Established
+    }
+
+    fn _send_tcp_packet(&mut self, flags: u8, options: &[u8], data: &[u8]) -> std::io::Result<()> {
         // pseudo header for checksum
         let mut pseudo_header = BytesMut::with_capacity(12);
         pseudo_header.put_slice(&self.local_addr.ip().octets());
@@ -98,17 +183,17 @@ impl<D> Socket<D> where D: SocketDelegate {
         packet.put(options);
         packet.put(data);
 
-        self.delegate.send_raw_socket_data(&packet)
+        self.delegate.send_raw_socket(&packet)
     }
 
-    fn send_syn(&mut self, with_ack: bool) -> std::io::Result<()> {
+    fn _send_syn(&mut self, with_ack: bool) -> std::io::Result<()> {
         // 0 to half, do not want to handle overflow
         self.next_send_seq = rand::thread_rng().gen_range(0..(u32::MAX / 2));
 
         // kind = 3, length = 3, scale factor = 14
         let window_scaling_option: &[u8] = &[3, 3, 14, 0];
 
-        self.send_tcp_packet(
+        self._send_tcp_packet(
             if with_ack { TCP_FLAG_SYN | TCP_FLAG_ACK } else { TCP_FLAG_SYN },
             window_scaling_option,
             &[],
@@ -131,8 +216,8 @@ mod tests {
     }
 
     impl SocketDelegate for &mut TestDelegate {
-        fn send_raw_socket_data(&mut self, data: &[u8]) -> std::io::Result<()> {
-            self.sent_packets.push(Bytes::copy_from_slice(data));
+        fn send_raw_socket(&mut self, pkt: &[u8]) -> std::io::Result<()> {
+            self.sent_packets.push(Bytes::copy_from_slice(pkt));
             Ok(())
         }
     }
@@ -146,7 +231,7 @@ mod tests {
             sent_packets: Vec::new(),
         };
 
-        let sock = Socket::connect(local_addr, remote_addr, &mut delegate)?;
+        let sock = Socket::new_connect(local_addr, remote_addr, &mut delegate)?;
         assert!(!sock.ready());
 
         assert_eq!(delegate.sent_packets.len(), 1);
