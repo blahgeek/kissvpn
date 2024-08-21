@@ -247,4 +247,30 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_interconnect() -> Result<()> {
+        let local_addr = SocketAddrV4::from_str("127.0.0.1:1234")?;
+        let remote_addr = SocketAddrV4::from_str("127.0.0.1:1235")?;
+
+        let (local_sock_sender, local_sock_receiver) = mpsc::channel::<Bytes>();
+        let (remote_sock_sender, remote_sock_receiver) = mpsc::channel::<Bytes>();
+
+        let mut local_sock = Socket::new_connect(local_addr, remote_addr, local_sock_sender)?;
+        let mut remote_sock = Socket::new_listened(remote_addr, local_addr, remote_sock_sender)?;
+
+        assert_eq!(remote_sock.feed_packet(&local_sock_receiver.try_recv()?)?, &[]);
+        assert!(!remote_sock.ready());
+
+        assert_eq!(local_sock.feed_packet(&remote_sock_receiver.try_recv()?)?, &[]);
+        assert!(local_sock.ready());
+
+        assert_eq!(remote_sock.feed_packet(&local_sock_receiver.try_recv()?)?, &[]);
+        assert!(remote_sock.ready());
+
+        local_sock.send(b"hello")?;
+        assert_eq!(remote_sock.feed_packet(&local_sock_receiver.try_recv()?)?, b"hello");
+
+        Ok(())
+    }
+
 }
