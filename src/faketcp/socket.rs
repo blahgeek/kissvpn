@@ -1,4 +1,4 @@
-use std::net::SocketAddrV4;
+use std::{fmt::{Debug, Display}, net::SocketAddrV4};
 
 use bytes::{Buf, BufMut, BytesMut};
 use rand::Rng;
@@ -21,7 +21,7 @@ const TCP_FLAG_SYN: u8 = 0x02;
 const TCP_FLAG_ACK: u8 = 0x10;
 const TCP_FLAG_RST: u8 = 0x04;
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 enum SocketState {
     Initial,  // server only
     SynSent,  // client only
@@ -29,6 +29,7 @@ enum SocketState {
     Established,
 }
 
+#[derive(Debug)]
 pub struct Socket<RAW> {
     local_addr: SocketAddrV4,
     remote_addr: SocketAddrV4,
@@ -54,6 +55,12 @@ fn ones_complement_add_by_16bit(data: &[u8], init: u16) -> u16 {
         sum = (sum & 0xffff) + (sum >> 16);
     }
     return sum as u16;
+}
+
+impl<RAW> Display for Socket<RAW> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Socket[{}->{}, {:?}]", self.local_addr, self.remote_addr, self.state)
+    }
 }
 
 impl<RAW> Socket<RAW> where RAW: RawSocketSender {
