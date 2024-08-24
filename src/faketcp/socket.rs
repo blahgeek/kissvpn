@@ -13,8 +13,8 @@ use crate::constants::BUF_CAPACITY;
 // 3. no disconnection, only RST, by client
 // 4. also, no disconnect callback. server should simply drop old connections after certain time when new is created
 
-pub trait RawSocketSender {
-    fn send(&self, pkt: &[u8]) -> std::io::Result<()>;
+pub trait RawSender {
+    fn send(&mut self, pkt: &[u8]) -> std::io::Result<()>;
 }
 
 const TCP_FLAG_SYN: u8 = 0x02;
@@ -63,7 +63,7 @@ impl<RAW> Display for Socket<RAW> {
     }
 }
 
-impl<RAW> Socket<RAW> where RAW: RawSocketSender {
+impl<RAW> Socket<RAW> where RAW: RawSender {
     pub fn new_connect(local_addr: SocketAddrV4, remote_addr: SocketAddrV4, raw_sock: RAW) -> std::io::Result<Self> {
         let mut sock = Self {
             local_addr,
@@ -220,8 +220,8 @@ mod tests {
 
     use super::*;
 
-    impl RawSocketSender for mpsc::Sender<Bytes> {
-        fn send(&self, pkt: &[u8]) -> std::io::Result<()> {
+    impl RawSender for mpsc::Sender<Bytes> {
+        fn send(&mut self, pkt: &[u8]) -> std::io::Result<()> {
             (self as &mpsc::Sender<Bytes>).send(Bytes::copy_from_slice(pkt)).unwrap();
             Ok(())
         }
